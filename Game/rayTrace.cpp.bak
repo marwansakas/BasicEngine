@@ -1,0 +1,327 @@
+#include "rayTrace.h"
+rayTrace::rayTrace(char* file): in(input(file)) {}
+/*									Help Functions									*/
+float distance(glm::vec3 v1, glm::vec4 v2) {
+	float x = (v1.x - v2.x);
+	float y = (v1.y - v2.y);
+	float z = (v1.z - v2.z);
+	return sqrt(x * x + y * y + z * z);
+}
+glm::vec3 handle_spotlight(glm::vec3 hit, glm::vec3 position, glm::vec3 rayDirectionNormal, float cos_value) {
+	glm::vec3 spotlightRayNormal = glm::normalize(hit - position);
+	float cosValueForLight = glm::dot(spotlightRayNormal, rayDirectionNormal);
+	if (cosValueForLight < cos_value) return glm::vec3(0.0f);
+	else return spotlightRayNormal;
+}
+glm::vec3 rayTrace::getVecNormal(bool isPlane, glm::vec3 hitCoord, int hitIndex) {
+	if (!isPlane) return glm::normalize(hitCoord - glm::vec3(in.spheres[hitIndex].coords));
+	return glm::normalize(glm::vec3(in.planes[hitIndex].coords));
+}
+/*								   Render picture									*/
+unsigned char* rayTrace::getPicture(int DISPLAY_WIDTH, int DISPLAY_HEIGHT)
+{
+	uint32_t* data = new uint32_t[DISPLAY_WIDTH * DISPLAY_HEIGHT];
+	for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+		for (int x = 0; x < DISPLAY_WIDTH; x++) {
+			glm::vec2 coord = { ((float)x) / ((float)DISPLAY_WIDTH), ((float)y) / ((float)DISPLAY_HEIGHT) };
+			coord = coord * 2.0f - 1.0f;
+			else printValue = false;
+			data[x + y * DISPLAY_WIDTH] = perPixel(glm::vec3(coord.x, -coord.y, 0.0f));
+		}
+	}
+	return (unsigned char*)data;
+}
+
+uint32_t rayTrace::perPixel(glm::vec3 rayDirection) {
+	int hitIndex = -1;
+	bool isPlane = false;
+	bool isDark = false;
+	Ray ray = { glm::vec3(in.eye.x, in.eye.y, in.eye.z) , rayDirection - glm::vec3(in.eye.x, in.eye.y, in.eye.z) };
+	Ray ray2 = { glm::vec3(in.eye.x, in.eye.y, in.eye.z) , rayDirection};
+	glm::vec3 rayPosition = glm::vec3(in.eye.x, in.eye.y, in.eye.z);
+	glm::vec3 hitCoord = getHitCoords(ray, hitIndex, isPlane, isDark);
+	glm::vec4 colorForPixel = getFinalColor(ray, hitCoord, hitIndex, isPlane, isDark, 0);
+	unsigned int r = colorForPixel.x * 255.0;
+	unsigned int g = colorForPixel.y * 255.0;
+	unsigned int b = colorForPixel.z * 255.0;
+	unsigned int a = colorForPixel.w * 255.0;
+	g = g << 8;
+	b = b << 16;
+	a = a << 24;
+	return r + g + b + a;
+}
+glm::vec3 rayTrace::getHitCoords(Ray ray, int& hitIndex, bool& isPlane, bool& isDark) {
+	int hitPrev = hitIndex;
+	bool isPlanePrev = isPlane;
+	float hitDistance = -1;
+	glm::vec3 hitCoord(0.0f);
+
+	if (ray.rayDirection != glm::vec3(0.0f)) ray.rayDirection = glm::normalize(ray.rayDirection);
+	for (unsigned int i = 0; i < in.planes.size(); i++) {
+		if (!(hitPrev != -1 && in.planes[i].type == 't')) {
+			if (!(isPlanePrev && hitPrev == i)) {
+				glm::vec3 val = calculatePlane(ray, in.planes[i].coords);
+				if (val != glm::vec3(0.0f))
+					if (hitDistance == -1 || distance(val, in.eye.coords) < hitDistance) {
+						hitCoord = val;
+						hitDistance = distance(val, in.eye.coords);
+						isPlane = true;
+						hitIndex = i;
+						if (in.planes[i].type == 'o')
+							if (abs(int(2.0 * (val.x + 10))) % 2 != abs(int(2.0 * (val.y + 10))) % 2) isDark = true;
+							else isDark = false;
+					}
+			}
+		}
+	}
+	for (unsigned int i = 0; i < in.spheres.size(); i++) {
+		if (!(!isPlanePrev && hitPrev == i)) {
+			if (!(hitPrev != -1 && in.spheres[i].type == 't')) {
+				glm::vec3 val = calculateSphere(in.spheres[i].coords, ray);
+				if (val != glm::vec3(0.0f))
+					if (hitDistance == -1 || distance(val, in.eye.coords) < hitDistance) {
+						hitCoord = val;
+						hitDistance = distance(val, in.eye.coords);
+						isPlane = false;
+						isDark = false;
+						hitIndex = i;
+					}
+			}
+		}
+	}
+	return hitCoord;
+}
+
+glm::vec4 rayTrace::getFinalColor(Ray ray, glm::vec3 hitCoord, int hitIndex, bool isPlane, bool isDark, int depth) {
+	bool isPlane2 = isPlane, isDark2 = isDark;
+	int hitIndex2 = hitIndex;
+	glm::vec3 phongModel = glm::vec3(0, 0, 0);
+	if (isPlane) {
+		plane plane = in.planes[hitIndex];
+		if (plane.type == 'o') {
+			phongModel = handle_object(hitCoord, phongModel, glm::vec3(plane.colors), plane.colors.w, hitIndex2, isPlane2, isDark2);
+		}
+		else if (plane.type == 'r') {
+			phongModel = handle_reflective(hitCoord, ray.rayDirection, phongModel, glm::vec3(plane.colors), plane.colors.w, hitIndex2, isPlane2, isDark2, depth);
+		}
+		else if (plane.type == 't') {
+			phongModel = handle_transparent(hitCoord, ray.rayDirection, phongModel, glm::vec3(plane.colors), plane.colors.w, hitIndex2, isPlane2, isDark2, depth);
+		}
+		if (isDark)
+			return glm::vec4(phongModel.r, phongModel.g, phongModel.b, 0.0) * 0.5f;
+		else return glm::vec4(phongModel.r, phongModel.g, phongModel.b, 0.0);
+	}
+	else if (hitIndex != -1) {
+		sphere sphere = in.spheres[hitIndex];
+		if (sphere.type == 'o') {
+			phongModel = handle_object(hitCoord, phongModel, glm::vec3(sphere.colors), sphere.colors.w, hitIndex2, isPlane2, isDark2);
+		}
+		else if (sphere.type == 'r') {
+			phongModel = handle_reflective(hitCoord, ray.rayDirection, phongModel, glm::vec3(sphere.colors), sphere.colors.w, hitIndex2, isPlane2, isDark2, depth);
+		}
+		else if (sphere.type == 't') {
+			phongModel = handle_transparent(hitCoord, ray.rayDirection, phongModel, glm::vec3(sphere.colors), sphere.colors.w, hitIndex2, isPlane2, isDark2, depth);
+		}
+		if (isDark)
+			return glm::vec4(phongModel.r, phongModel.g, phongModel.b, 0.0) * 0.5f;
+		else return glm::vec4(phongModel.r, phongModel.g, phongModel.b, 0.0);
+	}
+	return glm::vec4(0.0f);
+}
+/*									Intersections									*/
+glm::vec3 rayTrace::calculatePlane(Ray ray, glm::vec4 plane) {
+	glm::vec3 planeNormal(plane.x, plane.y, plane.z);
+	float d = plane.w;
+	if (glm::dot(ray.rayDirection, planeNormal) != 0) {
+		float ans = -(glm::dot(planeNormal, ray.rayPosition) + d) / glm::dot(planeNormal, ray.rayDirection);
+		if (ans >= 0) {
+			glm::vec3 res = ray.rayPosition+ ray.rayDirection * ans;
+			return res;
+		}
+	}
+	return glm::vec3(0.0f);
+}
+
+glm::vec3 rayTrace::calculateSphere(glm::vec4 sphere, Ray ray) {
+	float discriminant;
+	glm::vec3 center = ray.rayPosition - glm::vec3(sphere.x, sphere.y, sphere.z);
+
+	float a = 1;
+	float b = 2.0f * glm::dot(ray.rayDirection, center);
+	float c = glm::dot(center, center) - sphere.w * sphere.w;
+
+	discriminant = b * b - 4.0f * a * c;
+	if (discriminant >= 0.0f) {
+		float delta = sqrt(discriminant);
+		float ans1 = (-b + delta) / (2 * a);
+		float ans2 = (-b - delta) / (2 * a);
+		discriminant = glm::min(ans1, ans2);
+		return ray.rayPosition+ ray.rayDirection * discriminant;
+	}
+	return glm::vec3(0.0f);
+}
+/*									Handle Sphere/Plane									*/
+glm::vec3 rayTrace::handle_object(glm::vec3 hitCoord, glm::vec3 phongModel, glm::vec3 color, float shiny, int hitIndex, bool isPlane, bool isDark) {
+	phongModel = color * glm::vec3(in.ambLight.r, in.ambLight.g, in.ambLight.b);
+	for (int i = 0; i < in.spots.size(); i++) {
+		glm::vec3 colorForDiffuse = getDiffuseColor(hitCoord, glm::vec3(in.spots[i].direction), glm::vec3(in.spots[i].position), glm::vec3(in.spots[i].color), color, false, hitIndex, isPlane, isDark, in.spots[i].position.w);
+		colorForDiffuse = glm::max(colorForDiffuse, glm::vec3(0, 0, 0));
+		glm::vec3 colorForSpecular = getSpecularColor(hitCoord, glm::vec3(in.spots[i].direction), glm::vec3(in.spots[i].position), glm::vec3(in.spots[i].color), color, false, hitIndex, isPlane, isDark, in.spots[i].position.w, shiny);
+		colorForSpecular = glm::max(colorForSpecular, glm::vec3(0, 0, 0));
+		if (hasShadow(hitCoord, glm::vec3(in.spots[i].direction), glm::vec3(in.spots[i].position), glm::vec3(in.spots[i].color), color, false, hitIndex, isPlane, isDark, in.spots[i].position.w, shiny))
+			phongModel += colorForDiffuse + colorForSpecular;
+	}
+	for (int i = 0; i < in.directionals.size(); i++) {
+		glm::vec3 colorForDiffuse = getDiffuseColor(hitCoord, glm::vec3(in.directionals[i].direction), glm::vec3(glm::vec4(0.0f)), glm::vec3(in.directionals[i].color), color, true, hitIndex, isPlane, isDark, glm::vec4(0.0f).w);
+		colorForDiffuse = glm::max(colorForDiffuse, glm::vec3(0, 0, 0));
+		glm::vec3 colorForSpecular = getSpecularColor(hitCoord, glm::vec3(in.directionals[i].direction), glm::vec3(glm::vec4(0.0f)), glm::vec3(in.directionals[i].color), color, true, hitIndex, isPlane, isDark, glm::vec4(0.0f).w, shiny);
+		colorForSpecular = glm::max(colorForSpecular, glm::vec3(0, 0, 0));
+		if (hasShadow(hitCoord, glm::vec3(in.directionals[i].direction), glm::vec3(glm::vec4(0.0f)), glm::vec3(in.directionals[i].color), color, true, hitIndex, isPlane, isDark, glm::vec4(0.0f).w, shiny))
+			phongModel += colorForDiffuse + colorForSpecular;
+	}
+	return phongModel = glm::min(phongModel, glm::vec3(1.0f, 1.0f, 1.0f));
+}
+
+glm::vec3 rayTrace::handle_reflective(glm::vec3 hitCoord, glm::vec3 rayDirection, glm::vec3 phongModel, glm::vec3 color, float shiny, int hitIndex, bool isPlane, bool isDark, int depth) {
+	if (depth == 5) {
+		return glm::vec3(0.f, 0.f, 0.f);
+	}
+	Ray ray = {hitCoord, rayDirection};
+	glm::vec3 normalForObj = getVecNormal(isPlane, hitCoord, hitIndex);
+	glm::vec3 reflection_direction = rayDirection - 2.0f * normalForObj * (glm::dot(rayDirection, normalForObj));
+	Ray ray1 = { hitCoord, reflection_direction};
+	glm::vec3 hitCoord2 = getHitCoords(ray1, hitIndex, isPlane, isDark);
+	if (hitIndex == -1) {
+		return glm::vec3(0.f, 0.f, 0.f);
+	}
+	glm::vec4 colorOfReflection = getFinalColor(ray, hitCoord2, hitIndex, isPlane, isDark, depth + 1);
+	phongModel = glm::vec3(colorOfReflection.r, colorOfReflection.g, colorOfReflection.b);
+	return glm::min(phongModel, glm::vec3(1.0, 1.0, 1.0));
+}
+
+glm::vec3 rayTrace::handle_transparent(glm::vec3 hitCoord, glm::vec3 rayDirection, glm::vec3 phongModel, glm::vec3 color, float shiny, int hitIndex, bool isPlane, bool isDark, int depth) {
+	if (depth == 5) {
+		return glm::vec3(0.f, 0.f, 0.f);
+	}
+	glm::vec4 colorOfTransparency = glm::vec4(0.f, 0.f, 0.f, 0.f);
+	Ray ray = {hitCoord, rayDirection};
+	if (isPlane) {
+		glm::vec3 hitCoord2 = getHitCoords(ray, hitIndex, isPlane, isDark);
+		if (hitIndex == -1) {
+			return glm::vec3(0.f, 0.f, 0.f);
+		}
+		colorOfTransparency = getFinalColor(ray, hitCoord2, hitIndex, isPlane, isDark, depth + 1);
+	}
+	else {
+		// Using Snell's law
+		glm::vec3 normalForObj = getVecNormal(isPlane, hitCoord, hitIndex);
+		float pi = 3.14159265f;
+		float cosFirst = glm::dot(normalForObj, -rayDirection);
+		float thetaFirst = acos(cosFirst) * (180.0f / pi);
+		float snellFraction = (1.0f / 1.5f);
+		float sinFirst = sin(thetaFirst * (pi / 180.0f));
+		float sinSecond = snellFraction * sinFirst;
+		float thetaSecond = asin(sinSecond) * (180.0f / pi);
+		float cosSecond = cos(thetaSecond * (pi / 180.0f));
+
+		glm::vec3 rayDirectionToIn = (snellFraction * cosFirst - cosSecond) * normalForObj - snellFraction * (-rayDirection);
+		rayDirectionToIn = glm::normalize(rayDirectionToIn);
+		glm::vec3 hitCoord2 = getHitCoords(ray, hitIndex, isPlane, isDark);
+		Ray ray2 = { hitCoord, rayDirectionToIn };
+
+		if (hitIndex != -1) {
+			colorOfTransparency = getFinalColor(ray2, hitCoord2, hitIndex, isPlane, isDark, depth + 1);
+		}
+		else {
+			glm::vec3 theSecondHitPoint = calculateSphere(in.spheres[hitIndex].coords, ray2);
+
+			cosFirst = glm::dot(-glm::normalize(theSecondHitPoint), -rayDirectionToIn);
+			thetaFirst = acos(cosFirst) * (180.0f / pi);
+			snellFraction = (1.5f / 1.0f);
+			sinFirst = sin(thetaFirst * (pi / 180.0f));
+			sinSecond = snellFraction * sinFirst;
+			thetaSecond = asin(sinSecond) * (180.0f / pi);
+			cosSecond = cos(thetaSecond * (pi / 180.0f));
+
+			glm::vec3 rayDirectionToOut = (snellFraction * cosFirst - cosSecond) * -normalForObj - snellFraction * (-rayDirectionToIn);
+			rayDirectionToOut = glm::normalize(rayDirectionToOut);
+			Ray ray3 = { theSecondHitPoint, rayDirectionToOut };
+			glm::vec3 hitCoord2 = getHitCoords(ray3, hitIndex, isPlane, isDark);
+
+			if (hitIndex == -1) {
+				return glm::vec3(0.f, 0.f, 0.f);
+			}
+			colorOfTransparency = getFinalColor(ray3, hitCoord2, hitIndex, isPlane, isDark, depth + 1);
+		}
+	}
+
+	phongModel = glm::vec3(colorOfTransparency.r, colorOfTransparency.g, colorOfTransparency.b);
+	phongModel = glm::min(phongModel, glm::vec3(1.0, 1.0, 1.0));
+	return phongModel;
+}
+/*									Handle Lights									*/
+glm::vec3 rayTrace::getDiffuseColor(glm::vec3 hit, glm::vec3 direction, glm::vec3 position, glm::vec3 lightColor, glm::vec3 color, bool isDirectional, int hitIndex, bool isPlane, bool isDark, float cos_value) {
+	float factorForObj = 1.0f;
+	if (isPlane) {
+		factorForObj = -1.0f;
+	}
+	glm::vec3 rayDirectionNormal = factorForObj * glm::normalize(direction);
+	if (!isDirectional) {
+		rayDirectionNormal = handle_spotlight(hit, position, factorForObj * rayDirectionNormal, cos_value) * factorForObj;
+		if (rayDirectionNormal == glm::vec3(0.0f))
+			return rayDirectionNormal;
+	}
+
+	glm::vec3 normalForObj = getVecNormal(isPlane, hit, hitIndex);
+	float cosValForHit = glm::dot(normalForObj, -rayDirectionNormal);
+
+	glm::vec3 colorForDiffuse = color * cosValForHit * lightColor;
+	return colorForDiffuse;
+}
+
+glm::vec3 rayTrace::getSpecularColor(glm::vec3 hit, glm::vec3 direction, glm::vec3 position, glm::vec3 lightColor, glm::vec3 color, bool isDirectional, int hitIndex, bool isPlane, bool isDark, float cos_value, float shiny) {
+	glm::vec3 rayDirectionNormal = direction;
+	if (direction != glm::vec3(0.0f))
+		rayDirectionNormal = glm::normalize(direction);
+
+	if (!isDirectional) {
+		rayDirectionNormal = handle_spotlight(hit, position, rayDirectionNormal, cos_value);
+		if (rayDirectionNormal == glm::vec3(0.0f))
+			return rayDirectionNormal;
+	}
+
+	glm::vec3 normalForObj = getVecNormal(isPlane, hit, hitIndex);
+	glm::vec3 reflectedRayLight = rayDirectionNormal - 2.0f * normalForObj * glm::dot(rayDirectionNormal, normalForObj);
+	glm::vec3 rayToVeye = glm::normalize(position - hit);
+
+	float cosValForHit = glm::dot(rayToVeye, reflectedRayLight);
+	cosValForHit = glm::max(0.0f, cosValForHit);
+	cosValForHit = pow(cosValForHit, shiny);
+
+	glm::vec3 resultColor = 0.7f * cosValForHit * lightColor;
+	return resultColor;
+}
+bool rayTrace::hasShadow(glm::vec3 hit, glm::vec3 direction, glm::vec3 position, glm::vec3 lightColor, glm::vec3 color, bool isDirectional, int hitIndex, bool isPlane, bool isDark, float cos_value, float shiny) {
+	glm::vec3 rayDirectionNormal = direction;
+	if (direction != glm::vec3(0.0f))
+		rayDirectionNormal = glm::normalize(direction);
+
+	float minDis = INFINITY;
+
+	if (!isDirectional) {
+		rayDirectionNormal = handle_spotlight(hit, position, rayDirectionNormal, cos_value);
+		if (rayDirectionNormal == glm::vec3(0.0f)) {
+			return false;
+		}
+		else minDis = -(glm::dot(hit, position)) / std::abs(glm::dot(-rayDirectionNormal, position));
+	}
+
+	int hitIndex2 = hitIndex;
+	bool isPlane2 = isPlane;
+	Ray ray = { hit, -rayDirectionNormal };
+	glm::vec3 hitCoord = getHitCoords(ray, hitIndex2, isPlane2, isDark);
+	if (hitCoord != glm::vec3(0.0f) && hitIndex2 != -1 && distance(hitCoord, glm::vec4(hit.x, hit.y, hit.z, 0.0f)) < minDis) {
+		return false;
+	}
+	return true;
+}
